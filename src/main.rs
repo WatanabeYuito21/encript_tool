@@ -1,4 +1,3 @@
-use base64::{Engine as _, engine::general_purpose};
 use std::env;
 
 fn main() {
@@ -6,37 +5,59 @@ fn main() {
     let args: Vec<String> = env::args().collect();
 
     // 引数があるかチェック
-    if args.len() < 2 {
-        println!("使い方: {} <テキスト>", args[0]);
+    if args.len() < 3 {
+        println!("使い方: {} <encript|decrypt> <テキスト>", args[0]);
         return;
     }
 
-    // 最初の引数を取得
-    let text = &args[1];
+    // 引数を取得
+    let command = &args[1];
+    let text = &args[2];
     println!("元のテキスト: {text}");
 
-    // 文字列をバイト配列に変換
-    let bytes = text.as_bytes();
-    println!("バイト配列: {bytes:?}");
+    match command.as_str() {
+        "encrypt" => {
+            let encrypted = caeaser_encrypt(text, 3); // 3文字ずらす
+            println!("暗号化: {encrypted}");
+        }
+        "decrypt" => {
+            let decrypted = caeaser_decrypt(text, 3); // 3文字もどす
+            println!("複合化: {decrypted}");
+        }
+        _ => {
+            println!("コマンドは 'encrypt' または 'decrypt' を指定してください。");
+        }
+    }
+}
 
-    // バイト文字をBase64エンコード
-    let encoded = general_purpose::STANDARD.encode(bytes);
-    println!("Base64 encode: {encoded}");
+/// シーザー暗号で暗号化(アルファベットのみ)
+fn caeaser_encrypt(text: &str, shift: u8) -> String {
+    text.chars().map(|ch| shift_char(ch, shift)).collect()
+}
 
-    // Base64でコードして元に戻す
-    match general_purpose::STANDARD.decode(&encoded) {
-        Ok(decoded_bytes) => match String::from_utf8(decoded_bytes) {
-            Ok(decoded_text) => {
-                println!("デコード結果: {decoded_text}");
+/// シーザー暗号で複合化
+fn caeaser_decrypt(text: &str, shift: u8) -> String {
+    caeaser_encrypt(text, 26 - shift)
+}
 
-                if decoded_text == *text {
-                    println!("変換は成功しました!");
-                } else {
-                    println!("何かがおかしい...");
-                }
-            }
-            Err(e) => println!("UTF-8変換エラー: {e}"),
-        },
-        Err(e) => println!("Base64デコードエラー: {e}"),
+/// 1文字シフトする関数
+fn shift_char(ch: char, shift: u8) -> char {
+    match ch {
+        // 小文字のa-z
+        'a'..='z' => {
+            let pos = ch as u8 - b'a'; // aを0とする位置
+            let new_pos = (pos + shift) % 26; // 26文字でループ
+            (b'a' + new_pos) as char
+        }
+
+        // 大文字のA-Z
+        'A'..='Z' => {
+            let pos = ch as u8 - b'A'; // Aを0とする位置
+            let new_pos = (pos + shift) % 26; // 26文字でループ
+            (b'A' + new_pos) as char
+        }
+
+        // アルファベット以外はそのまま
+        _ => ch,
     }
 }
