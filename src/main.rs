@@ -1,4 +1,9 @@
+use aes_gcm::{
+    Aes256Gcm, Nonce,
+    aead::{Aead, KeyInit},
+};
 use base64::{Engine as _, engine::general_purpose};
+use rand::RngCore;
 use std::env;
 
 fn main() {
@@ -7,21 +12,46 @@ fn main() {
 
     // 引数があるかチェック
     if args.len() < 3 {
-        println!("使い方: {} <encrypt|decrypt> <テキスト>", args[0]);
+        println!(
+            "使い方: {} <encrypt|decrypt> <テキスト> [パスワード]",
+            args[0]
+        );
         return;
     }
 
     // 引数を取得
     let command = &args[1];
     let text = &args[2];
+    let password = if args.len() >= 4 {
+        &args[3]
+    } else {
+        "defaultpass"
+    };
 
     match command.as_str() {
         "encrypt" => {
-            println!("=== AES暗号化の準備 ===");
-            demonstrate_crypto_basics(text);
+            println!("=== AES暗号化 ===");
+            match aes_encrypt(text, password) {
+                Ok(encrypted) => {
+                    println!("暗号化成功!");
+                    println!("暗号文: {encrypted}");
+                }
+                Err(e) => {
+                    println!("暗号化エラー: {e}");
+                }
+            }
         }
         "decrypt" => {
-            println!("未実装")
+            println!("=== AES複合化 ===");
+            match aes_decrypt(text, password) {
+                Ok(decripted) => {
+                    println!("複合化成功!");
+                    println!("元のテキスト: {decripted}");
+                }
+                Err(e) => {
+                    println!("複合化エラー: {e}");
+                }
+            }
         }
         _ => {
             println!("コマンドは 'encrypt' または 'decrypt' を指定してください。");
@@ -29,44 +59,89 @@ fn main() {
     }
 }
 
-/// 暗号化の基本要素を理解するためのデモ
-fn demonstrate_crypto_basics(text: &str) {
+/// AES-GCMで暗号化
+fn aes_encrypt(text: &str, password: &str) -> Result<String, Box<dyn std::error::Error>> {
     println!("元のテキスト: {text}");
+    println!("パスワード: {password}");
 
-    // キーの生成
-    let key = generate_simple_key("mypassword");
-    println!("生成したキー: {}", base64_encode(&key));
+    // パスワードから32バイトキーの生成
+    let key = generate_key_from_password(password);
+    println!("キー生成完了(32Byte)");
 
-    // ナンス(使い捨て番号)の生成
-    let nonce = generate_nonce();
-    println!("ナンス: {}", base64_encode(&nonce));
+    // ランダムナンスの生成
+    let mut nonce_bytes = [0u8; 12];
+    rand::rng().fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    println!("ナンス生成: {}", base64_encode(&nonce_bytes));
 
-    // データの準備
-    let data_bytes = text.as_bytes();
-    println!("データ(バイト): {data_bytes:?}");
+    // AES暗号化エンジンの初期化
+    let cipher = Aes256Gcm::new(&key.into());
+    println!("AES暗号エンジン初期化完了");
 
-    // XOR暗号で暗号化
-    let simple_encrypted = simple_xor_encrypt(data_bytes, &key[0..data_bytes.len().min(32)]);
-    println!("安易暗号化結果: {}", base64_encode(&simple_encrypted));
+    // 暗号化実施
+    let ciphertext = cipher
+        .encrypt(nonce, text.as_bytes())
+        .map_err(|e| format!("暗号化に失敗: {e}"))?;
+    println!("暗号化完了。データ長: {} バイト", ciphertext.len());
 
-    // 複合化して確認
-    let decrypted = simple_xor_encrypt(&simple_encrypted, &key[0..simple_encrypted.len().min(32)]);
-    let decrypted_text = String::from_utf8_lossy(&decrypted);
-    println!("複合化結果: {decrypted_text}");
+    // ナンス + 暗号文を結合
+    let mut result = nonce_bytes.to_vec();
+    result.extend_from_slice(&ciphertext);
+    println!("ナンス暗号文を結合。総データ長: {} バイト", result.len());
 
-    if decrypted_text == text {
-        println!("暗号化・複合化成功!");
-    } else {
-        println!("何かがおかしい");
-    }
+    // Base64エンコードして返却
+    let encoded = base64_encode(&result);
+    println!("Base64エンコード完了");
+
+    Ok(encoded)
 }
 
-/// パスワードから簡単なキーを作成
-fn generate_simple_key(password: &str) -> Vec<u8> {
-    let mut key = vec![0u8; 32]; // 32byte = 256Bit Key
+/// AES-GCMで複合化
+fn aes_decrypt(encrypted_text: &str, password: &str) -> Result<String, Box<dyn std::error::Error>> {
+    println!("暗号文: {encrypted_text}");
+    println!("パスワード: {password}");
+
+    // Base64デコード
+    let data = general_purpose::STANDARD
+        .decode(encrypted_text)
+        .map_err(|e| format!("Base64デコードエラー: {e}"))?;
+    println!("Base64デコード完了。データ長: {} バイト", data.len());
+
+    if data.len() < 12 {
+        return Err("データが短すぎます(最低12バイトのナンスが必要)".into());
+    }
+
+    // ナンスと暗号文を分離
+    let (nonce_bytes, ciphertext) = data.split_at(12);
+    let nonce = Nonce::from_slice(nonce_bytes);
+    println!("ナンス抽出: {}", base64_encode(nonce_bytes));
+    println!("暗号文長: {} バイト", ciphertext.len());
+
+    // パスワードからキーを再生成
+    let key = generate_key_from_password(password);
+    println!("キー再生成完了");
+
+    // AES複合化エンジンを初期化
+    let cipher = Aes256Gcm::new(&key.into());
+    println!("AES復号エンジン初期化完了");
+
+    // 複合化
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|e| format!("複合化に失敗: {e}"))?;
+    println!("複合化完了。データ長: {} バイト", plaintext.len());
+
+    // UTF-8文字列に変換
+    let result = String::from_utf8(plaintext).map_err(|e| format!("UTF-8変換エラー: {e}"))?;
+
+    Ok(result)
+}
+
+/// パスワードから32バイトキーの生成
+fn generate_key_from_password(password: &str) -> [u8; 32] {
+    let mut key = [0u8; 32];
     let password_bytes = password.as_bytes();
 
-    // パスワードをキーサイズに拡張
     for (i, &byte) in password_bytes.iter().cycle().take(32).enumerate() {
         key[i] = byte;
     }
@@ -74,20 +149,7 @@ fn generate_simple_key(password: &str) -> Vec<u8> {
     key
 }
 
-/// ランダムなナンスを生成(学習用で固定)
-fn generate_nonce() -> Vec<u8> {
-    vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-}
-
-/// XOR暗号(学習用で簡単な暗号化)
-fn simple_xor_encrypt(data: &[u8], key: &[u8]) -> Vec<u8> {
-    data.iter()
-        .zip(key.iter().cycle())
-        .map(|(&data_byte, &key_byte)| data_byte ^ key_byte)
-        .collect()
-}
-
-// Base64エンコードのヘルパー
+/// Base64エンコードのヘルパー
 fn base64_encode(data: &[u8]) -> String {
     general_purpose::STANDARD.encode(data)
 }
