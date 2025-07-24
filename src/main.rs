@@ -100,6 +100,56 @@ enum Commands {
         #[arg(short, long)]
         no_newline: bool,
     },
+    /// ファイルを暗号化する
+    EncryptFile {
+        /// 暗号化するファイルパス
+        input: PathBuf,
+
+        /// 出力ファイルパス(指定しない場合は 元ファイル名.enc)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// 暗号化用のパスワード
+        #[arg(short, long)]
+        password: Option<String>,
+
+        /// 環境変数からパスワードを読み取る
+        #[arg(long)]
+        password_env: Option<String>,
+
+        /// 詳細処理過程表示
+        #[arg(short, long)]
+        verbose: bool,
+
+        /// 暗号化後に元ファイルを削除
+        #[arg(long)]
+        delete_original: bool,
+    },
+    /// 暗号化されたファイルを複合化する
+    DecryptFile {
+        /// 複合化するファイルのパス
+        input: PathBuf,
+
+        /// 出力ファイルのパス(指定しない場合は自動決定)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// 複合化用のパスワード
+        #[arg(short, long)]
+        password: Option<String>,
+
+        /// 環境変数からパスワードを読み取る
+        #[arg(long)]
+        password_env: Option<String>,
+
+        /// 詳細な処理過程を表示
+        #[arg(short, long)]
+        verbose: bool,
+
+        /// 複合化後に暗号化ファイルを削除
+        #[arg(long)]
+        delete_encrypted: bool,
+    },
     /// 設定ファイルを管理する
     Config {
         #[command(subcommand)]
@@ -164,6 +214,55 @@ fn main() -> Result<()> {
             } else {
                 println!("{decrypted}");
             }
+        }
+        Commands::EncryptFile {
+            input,
+            output,
+            password,
+            password_env,
+            verbose,
+            delete_original,
+        } => {
+            let password = get_password_with_config(password, password_env, &config)?;
+            let verbose = *verbose || config.default_verbose;
+
+            let output_path = determine_output_path(input, output, true)?;
+            encrypt_file(input, &output_path, &password, verbose)?;
+
+            if *delete_original {
+                fs::remove_file(input)
+                    .with_context(|| format!("元ファイルの削除に失敗: {}", input.display()))?;
+                if verbose {
+                    println!("元ファイルを削除しました: {}", input.display());
+                }
+            }
+
+            println!("ファイル暗号化完了: {}", output_path.display());
+        }
+
+        Commands::DecryptFile {
+            input,
+            output,
+            password,
+            password_env,
+            verbose,
+            delete_encrypted,
+        } => {
+            let password = get_password_with_config(password, password_env, &config)?;
+            let verbose = *verbose || config.default_verbose;
+
+            let output_path = determine_output_path(input, output, false)?;
+            decrypt_file(input, &output_path, &password, verbose)?;
+
+            if *delete_encrypted {
+                fs::remove_file(input)
+                    .with_context(|| format!("暗号化ファイルの削除に失敗: {}", input.display()))?;
+                if verbose {
+                    println!("暗号化ファイルを削除しました: {}", input.display());
+                }
+            }
+
+            println!("ファイル複合化完了: {}", output_path.display());
         }
 
         Commands::Config { action } => {
@@ -317,6 +416,177 @@ fn handle_config_command(action: &ConfigAction, config_path: Option<&PathBuf>) -
                 println!("設定ファイルは存在しません: {}", path.display());
             }
         }
+    }
+
+    Ok(())
+}
+
+/// 出力ファイルのパスを決定
+fn determine_output_path(
+    input: &PathBuf,
+    output: &Option<PathBuf>,
+    is_encrypt: bool,
+) -> Result<PathBuf> {
+    match output {
+        Some(path) => Ok(path.clone()),
+        None => {
+            if is_encrypt {
+                // 暗号化の場合:.enc拡張子の追加
+                let mut path = input.clone();
+                let new_name = format!(
+                    "{}.enc",
+                    input
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .ok_or_else(|| anyhow!("無効なファイル名"))?
+                );
+                path.set_file_name(new_name);
+                Ok(path)
+            } else {
+                // 複合化の場合:.enc拡張子の除去
+                let path = input.clone();
+                if let Some(stem) = path.file_stem() {
+                    let mut new_path = path.clone();
+                    new_path.set_file_name(stem);
+                    Ok(new_path)
+                } else {
+                    Err(anyhow!("暗号化ファイルの拡張子が不正です"))
+                }
+            }
+        }
+    }
+}
+
+/// ファイルの暗号化
+fn encrypt_file(
+    input_path: &PathBuf,
+    output_path: &PathBuf,
+    password: &str,
+    verbose: bool,
+) -> Result<()> {
+    if verbose {
+        println!("=== ファイル暗号化開始 ===");
+        println!("入力ファイル: {}", input_path.display());
+        println!("出力ファイル: {}", output_path.display());
+    }
+
+    // ファイルサイズ取得
+    let metadata = fs::metadata(input_path)
+        .with_context(|| format!("ファイル情報の取得に失敗: {}", input_path.display()))?;
+    let file_size = metadata.len();
+
+    if verbose {
+        println!("ファイルサイズ: {} バイト", file_size);
+    }
+
+    // キーとナンスを生成
+    let key = generate_key_from_password(password);
+    let mut nonce_bytes = [0u8; 12];
+    rand::rng().fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    if verbose {
+        println!("キー生成完了");
+        println!("ナンス: {}", base64_encode(&nonce_bytes));
+    }
+
+    // AES暗号化エンジンを初期化
+    let cipher = Aes256Gcm::new(&key.into());
+
+    // ファイルを読み込み
+    let input_data = fs::read(input_path)
+        .with_context(|| format!("ファイル読み込みに失敗: {}", input_path.display()))?;
+
+    if verbose {
+        println!("ファイル読み込み完了: {} バイト", input_data.len());
+    }
+
+    // 暗号化実施
+    let ciphertext = cipher
+        .encrypt(nonce, input_data.as_slice())
+        .map_err(|e| anyhow!("ファイル暗号化に失敗: {e}"))?;
+
+    if verbose {
+        println!("暗号化完了: {} バイト", ciphertext.len());
+    }
+
+    // 出力データを構成(ナンス + 暗号文)
+    let mut output_data = nonce_bytes.to_vec();
+    output_data.extend_from_slice(&ciphertext);
+
+    // ファイルに書き込み
+    fs::write(output_path, &output_data)
+        .with_context(|| format!("出力ファイルの書き込みに失敗: {}", output_path.display()))?;
+
+    if verbose {
+        println!("ファイル書き込み完了: {} バイト", output_data.len());
+        println!("=== ファイル暗号化完了 ===");
+    }
+
+    Ok(())
+}
+
+/// ファイルを復号化
+fn decrypt_file(
+    input_path: &PathBuf,
+    output_path: &PathBuf,
+    password: &str,
+    verbose: bool,
+) -> Result<()> {
+    if verbose {
+        println!("=== ファイル復号化開始 ===");
+        println!("入力ファイル: {}", input_path.display());
+        println!("出力ファイル: {}", output_path.display());
+    }
+
+    // 暗号化ファイルを読み込み
+    let encrypted_data = fs::read(input_path)
+        .with_context(|| format!("暗号化ファイルの読み込みに失敗: {}", input_path.display()))?;
+
+    if verbose {
+        println!(
+            "暗号化ファイル読み込み完了: {} バイト",
+            encrypted_data.len()
+        );
+    }
+
+    if encrypted_data.len() < 12 {
+        return Err(anyhow!("暗号化ファイルが不正です（サイズが小さすぎます）"));
+    }
+
+    // ナンスと暗号文を分離
+    let (nonce_bytes, ciphertext) = encrypted_data.split_at(12);
+    let nonce = Nonce::from_slice(nonce_bytes);
+
+    if verbose {
+        println!("ナンス抽出: {}", base64_encode(nonce_bytes));
+        println!("暗号文サイズ: {} バイト", ciphertext.len());
+    }
+
+    // キーを再生成
+    let key = generate_key_from_password(password);
+    let cipher = Aes256Gcm::new(&key.into());
+
+    if verbose {
+        println!("復号化エンジン初期化完了");
+    }
+
+    // 復号化実行
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|e| anyhow!("ファイル復号化に失敗: {e}"))?;
+
+    if verbose {
+        println!("復号化完了: {} バイト", plaintext.len());
+    }
+
+    // ファイルに書き込み
+    fs::write(output_path, &plaintext)
+        .with_context(|| format!("出力ファイルの書き込みに失敗: {}", output_path.display()))?;
+
+    if verbose {
+        println!("ファイル書き込み完了");
+        println!("=== ファイル復号化完了 ===");
     }
 
     Ok(())
