@@ -3,6 +3,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit},
 };
 use anyhow::{Context, Result, anyhow};
+use argon2::Argon2;
 use base64::{Engine as _, engine::general_purpose};
 use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -25,6 +26,28 @@ struct Config {
     pub default_password_env: Option<String>,
     /// 設定ファイルのバージョン
     pub version: String,
+    /// Argon2設定
+    pub argon2: Argon2Config,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Argon2Config {
+    /// メモリ使用量 (KB)
+    pub memory_cost: u32,
+    /// 時間コスト(繰り返し回数)
+    pub time_cost: u32,
+    /// 並列度
+    pub parallelism: u32,
+}
+
+impl Default for Argon2Config {
+    fn default() -> Self {
+        Self {
+            memory_cost: 65536, // 64MB
+            time_cost: 3,       // 3回繰り返し
+            parallelism: 4,     // 4並列
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -39,7 +62,8 @@ impl Default for Config {
             default_format: OutputFormat::Base64,
             default_verbose: false,
             default_password_env: Some("MYCRYPT_PASSWORD".to_string()),
-            version: "1.0".to_string(),
+            version: "2.0".to_string(),
+            argon2: Argon2Config::default(),
         }
     }
 }
@@ -198,7 +222,7 @@ fn main() -> Result<()> {
             let password = get_password_with_config(password, password_env, &config)?;
             let verbose = *verbose || config.default_verbose;
 
-            let encrypted = aes_encrypt(&input_text, &password, verbose)?;
+            let encrypted = encrypt_string(&input_text, &password, &config, verbose)?;
 
             if *no_newline {
                 print!("{encrypted}");
@@ -218,7 +242,7 @@ fn main() -> Result<()> {
             let password = get_password_with_config(password, password_env, &config)?;
             let verbose = *verbose || config.default_verbose;
 
-            let decrypted = aes_decrypt(&input_text, &password, verbose)?;
+            let decrypted = decrypt_string(&input_text, &password, &config, verbose)?;
 
             if *no_newline {
                 print!("{decrypted}");
@@ -241,9 +265,9 @@ fn main() -> Result<()> {
             let output_path = determine_output_path(input, output, true)?;
 
             if *streaming {
-                encrypt_file_streaming(input, &output_path, &password, verbose)?;
+                encrypt_file_streaming(input, &output_path, &password, &config, verbose)?;
             } else {
-                encrypt_file(input, &output_path, &password, verbose)?;
+                encrypt_file(input, &output_path, &password, &config, verbose)?;
             }
 
             if *delete_original {
@@ -271,9 +295,9 @@ fn main() -> Result<()> {
 
             let output_path = determine_output_path(input, output, false)?;
             if *streaming {
-                decrypt_file_streaming(input, &output_path, &password, verbose)?;
+                decrypt_file_streaming(input, &output_path, &password, &config, verbose)?;
             } else {
-                decrypt_file(input, &output_path, &password, verbose)?;
+                decrypt_file(input, &output_path, &password, &config, verbose)?;
             }
 
             if *delete_encrypted {
@@ -484,6 +508,7 @@ fn encrypt_file(
     input_path: &PathBuf,
     output_path: &PathBuf,
     password: &str,
+    config: &Config,
     verbose: bool,
 ) -> Result<()> {
     if verbose {
@@ -502,7 +527,7 @@ fn encrypt_file(
     }
 
     // キーとナンスを生成
-    let key = generate_key_from_password(password);
+    let key = generate_key_from_password(password, config, verbose)?;
     let mut nonce_bytes = [0u8; 12];
     rand::rng().fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
@@ -553,6 +578,7 @@ fn encrypt_file_streaming(
     input_path: &PathBuf,
     output_path: &PathBuf,
     password: &str,
+    config: &Config,
     verbose: bool,
 ) -> Result<()> {
     const CHUNK_SIZE: usize = 64 * 1024; // 64KB のチャンク
@@ -586,7 +612,7 @@ fn encrypt_file_streaming(
         );
 
     // キーを生成
-    let key = generate_key_from_password(password);
+    let key = generate_key_from_password(password, config, verbose)?;
 
     if verbose {
         println!("キー生成完了");
@@ -688,6 +714,7 @@ fn decrypt_file(
     input_path: &PathBuf,
     output_path: &PathBuf,
     password: &str,
+    config: &Config,
     verbose: bool,
 ) -> Result<()> {
     if verbose {
@@ -721,7 +748,7 @@ fn decrypt_file(
     }
 
     // キーを再生成
-    let key = generate_key_from_password(password);
+    let key = generate_key_from_password(password, config, verbose)?;
     let cipher = Aes256Gcm::new(&key.into());
 
     if verbose {
@@ -754,6 +781,7 @@ fn decrypt_file_streaming(
     input_path: &Path,
     output_path: &Path,
     password: &str,
+    config: &Config,
     verbose: bool,
 ) -> Result<()> {
     if verbose {
@@ -781,7 +809,7 @@ fn decrypt_file_streaming(
     }
 
     // キーの生成
-    let key = generate_key_from_password(password);
+    let key = generate_key_from_password(password, config, verbose)?;
 
     // ファイルを開く
     let mut input_file = BufReader::new(
@@ -891,7 +919,7 @@ fn decrypt_file_streaming(
 }
 
 /// AES-GCMで暗号化
-fn aes_encrypt(text: &str, password: &str, verbose: bool) -> Result<String> {
+fn encrypt_string(text: &str, password: &str, config: &Config, verbose: bool) -> Result<String> {
     if verbose {
         println!("=== 暗号化処理開始 ===");
         println!("元のテキスト: {text}");
@@ -899,7 +927,7 @@ fn aes_encrypt(text: &str, password: &str, verbose: bool) -> Result<String> {
     }
 
     // ステップ1: パスワードから32バイトキーを生成
-    let key = generate_key_from_password(password);
+    let key = generate_key_from_password(password, config, verbose)?;
     if verbose {
         println!("キー生成完了 (32バイト)");
     }
@@ -944,7 +972,12 @@ fn aes_encrypt(text: &str, password: &str, verbose: bool) -> Result<String> {
 }
 
 /// AES-GCMで復号化
-fn aes_decrypt(encrypted_text: &str, password: &str, verbose: bool) -> Result<String> {
+fn decrypt_string(
+    encrypted_text: &str,
+    password: &str,
+    config: &Config,
+    verbose: bool,
+) -> Result<String> {
     if verbose {
         println!("=== 復号化処理開始 ===");
         println!("暗号文長: {} 文字", encrypted_text.len());
@@ -971,7 +1004,7 @@ fn aes_decrypt(encrypted_text: &str, password: &str, verbose: bool) -> Result<St
     }
 
     // ステップ3: パスワードからキーを再生成
-    let key = generate_key_from_password(password);
+    let key = generate_key_from_password(password, config, verbose)?;
     if verbose {
         println!("キー再生成完了");
     }
@@ -1001,16 +1034,71 @@ fn aes_decrypt(encrypted_text: &str, password: &str, verbose: bool) -> Result<St
     Ok(result)
 }
 
-/// パスワードから32バイトキーを生成
-fn generate_key_from_password(password: &str) -> [u8; 32] {
-    let mut key = [0u8; 32];
-    let password_bytes = password.as_bytes();
-
-    for (i, &byte) in password_bytes.iter().cycle().take(32).enumerate() {
-        key[i] = byte;
+/// Argon2を使用してパスワードから安全なキーを導出
+fn derive_key_with_argon2(
+    password: &str,
+    salt: &[u8],
+    config: &Argon2Config,
+    verbose: bool,
+) -> Result<[u8; 32]> {
+    if verbose {
+        println!("=== Argon2キー導出開始 ===");
+        println!("パラメータ:");
+        println!("  メモリ使用量: {} KB", config.memory_cost);
+        println!("  時間コスト: {}", config.time_cost);
+        println!("  並列度: {}", config.parallelism);
+        println!("  ソルト: {}", base64_encode(salt));
     }
 
-    key
+    // Argon2パラメータを設定
+    let params = argon2::Params::new(
+        config.memory_cost,
+        config.time_cost,
+        config.parallelism,
+        Some(32), // 出力長: 32バイト
+    )
+    .map_err(|e| anyhow!("Argon2パラメータの設定に失敗: {}", e))?;
+
+    let argon2 = Argon2::new(
+        argon2::Algorithm::Argon2id, // 最も安全な variant
+        argon2::Version::V0x13,      // 最新バージョン
+        params,
+    );
+
+    // キー導出を実行
+    let start_time = std::time::Instant::now();
+
+    let mut key = [0u8; 32];
+    argon2
+        .hash_password_into(password.as_bytes(), salt, &mut key)
+        .map_err(|e| anyhow!("Argon2キー導出に失敗: {}", e))?;
+
+    let duration = start_time.elapsed();
+
+    if verbose {
+        println!("キー導出完了 - 処理時間: {:.2}秒", duration.as_secs_f64());
+        println!("=== Argon2キー導出完了 ===");
+    }
+
+    Ok(key)
+}
+
+/// パスワード空32バイトキーを生成(Argon2使用)
+fn generate_key_from_password(password: &str, config: &Config, verbose: bool) -> Result<[u8; 32]> {
+    // ソルトを生成
+    let mut salt = [0u8; 16];
+    let password_hash = std::collections::hash_map::DefaultHasher::new();
+    use std::hash::{Hash, Hasher};
+    let mut hasher = password_hash;
+    password.hash(&mut hasher);
+    let hash_value = hasher.finish();
+
+    // ハッシュ値からソルトを生成
+    let hash_bytes = hash_value.to_le_bytes();
+    salt[..8].copy_from_slice(&hash_bytes);
+    salt[8..16].copy_from_slice(&hash_bytes);
+
+    derive_key_with_argon2(password, &salt, &config.argon2, verbose)
 }
 
 /// Base64エンコードのヘルパー関数
