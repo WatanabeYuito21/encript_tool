@@ -504,7 +504,7 @@ fn encrypt_file(
     let file_size = metadata.len();
 
     if verbose {
-        println!("ファイルサイズ: {} バイト", file_size);
+        println!("ファイルサイズ: {file_size} バイト");
     }
 
     // キーとナンスを生成
@@ -658,7 +658,7 @@ fn encrypt_file_streaming(
     progress.finish_with_message("暗号化完了");
 
     if verbose {
-        println!("処理済みバイト数: {} バイト", processed_bytes);
+        println!("処理済みバイト数: {processed_bytes} バイト");
         println!("=== ストリーミング暗号化完了 ===");
     }
 
@@ -841,7 +841,7 @@ fn decrypt_file_streaming(
     progress.finish_with_message("復号化完了");
 
     if verbose {
-        println!("処理済みバイト数: {} バイト", processed_bytes);
+        println!("処理済みバイト数: {processed_bytes} バイト");
         println!("=== ストリーミング復号化完了 ===");
     }
 
