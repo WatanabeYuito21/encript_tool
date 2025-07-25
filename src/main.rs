@@ -13,11 +13,10 @@ use ctr::{
 use indicatif::{ProgressBar, ProgressStyle};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use std::io::{self, BufWriter, Read, Write};
-use std::path::PathBuf;
 use std::{
     fs::{self, File},
-    io::BufReader,
+    io::{self, BufReader, BufWriter, Read, Write},
+    path::{Path, PathBuf},
 };
 
 /// 設定ファイルの構造
@@ -451,7 +450,7 @@ fn handle_config_command(action: &ConfigAction, config_path: Option<&PathBuf>) -
 
 /// 出力ファイルのパスを決定
 fn determine_output_path(
-    input: &PathBuf,
+    input: &Path,
     output: &Option<PathBuf>,
     is_encrypt: bool,
 ) -> Result<PathBuf> {
@@ -460,7 +459,7 @@ fn determine_output_path(
         None => {
             if is_encrypt {
                 // 暗号化の場合:.enc拡張子の追加
-                let mut path = input.clone();
+                let mut path = input.to_path_buf();
                 let new_name = format!(
                     "{}.enc",
                     input
@@ -472,7 +471,7 @@ fn determine_output_path(
                 Ok(path)
             } else {
                 // 複合化の場合:.enc拡張子の除去
-                let path = input.clone();
+                let path = input.to_path_buf();
                 if let Some(stem) = path.file_stem() {
                     let mut new_path = path.clone();
                     new_path.set_file_name(stem);
