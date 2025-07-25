@@ -1,15 +1,10 @@
 use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit},
-    aes::Aes256,
 };
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose};
 use clap::{Parser, Subcommand};
-use ctr::{
-    Ctr128BE,
-    cipher::{KeyIvInit, StreamCipher},
-};
 use indicatif::{ProgressBar, ProgressStyle};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -590,14 +585,11 @@ fn encrypt_file_streaming(
             .progress_chars("#>-")
         );
 
-    // キーとIVを生成
+    // キーを生成
     let key = generate_key_from_password(password);
-    let mut iv = [0u8; 16]; //AES-CTRではIVは16バイト
-    rand::rng().fill_bytes(&mut iv);
 
     if verbose {
         println!("キー生成完了");
-        println!("IV: {}", base64_encode(&iv));
     }
 
     // ファイルを開く
@@ -611,21 +603,23 @@ fn encrypt_file_streaming(
             .with_context(|| format!("出力ファイルの作成に失敗: {}", output_path.display()))?,
     );
 
-    // IVをファイルの先頭に書き込み
-    output_file.write_all(&iv).context("IVの書き込みに失敗")?;
-
-    // AES-CTR暗号化エンジンを初期化
-    type Aes256Ctr = Ctr128BE<Aes256>;
-    let mut cipher = Aes256Ctr::new(&key.into(), &iv.into());
+    // ファイルヘッダーを書き込み(マジックナンバー + チャンクサイズ)
+    let header = b"GCMSTREAM";
+    output_file
+        .write_all(header)
+        .context("ヘッダーの書き込みに失敗")?;
+    output_file
+        .write_all(&(CHUNK_SIZE as u32).to_le_bytes())
+        .context("チャンクサイズの書き込みに失敗")?;
 
     if verbose {
-        println!("AES-CTR暗号エンジンを初期化完了");
+        println!("AES-GCM暗号エンジンを準備完了");
         println!("ストリーミング処理開始...");
     }
 
-    // チャンクごとに処理
     let mut buffer = vec![0u8; CHUNK_SIZE];
     let mut processed_bytes = 0u64;
+    let mut chunk_counter = 0u64;
 
     loop {
         let bytes_read = input_file
@@ -636,16 +630,40 @@ fn encrypt_file_streaming(
             break; //EOF
         }
 
-        // データを暗号化
-        let mut chunk = buffer[..bytes_read].to_vec();
-        cipher.apply_keystream(&mut chunk);
+        // チャンク毎にユニークなナンス生成
+        let mut nonce_bytes = [0u8; 12];
+        // チャンクカウンターを最初の8バイトに設定
+        let counter_bytes = chunk_counter.to_le_bytes();
+        nonce_bytes[0..8].copy_from_slice(&counter_bytes);
+        // 残りの4バイトにランダム要素を追加
+        let mut random_part = [0u8; 4];
+        rand::rng().fill_bytes(&mut random_part);
+        nonce_bytes[8..12].copy_from_slice(&random_part);
 
-        // 暗号化されたデータを書き込み
+        let nonce = Nonce::from_slice(&nonce_bytes);
+
+        // AES_GCM暗号化エンジンを初期化(チャンク毎に新しいインスタンス)
+        let cipher = Aes256Gcm::new(&key.into());
+
+        // データを暗号化
+        let chunk_data = &buffer[..bytes_read];
+        let encrypted_chunk = cipher
+            .encrypt(nonce, chunk_data)
+            .map_err(|e| anyhow!("チャンク暗号化に失敗: {e}"))?;
+
+        // チャンクデータを書き込み: ナンス(12) + 暗号化データ長(4) + 暗号化データ
         output_file
-            .write_all(&chunk)
-            .context("暗号化データの書き込み中にエラーが発生")?;
+            .write_all(&nonce_bytes)
+            .context("ナンスの書き込みに失敗")?;
+        output_file
+            .write_all(&(encrypted_chunk.len() as u32).to_le_bytes())
+            .context("チャンク長の書き込みに失敗")?;
+        output_file
+            .write_all(&encrypted_chunk)
+            .context("暗号化チャンクの書き込みに失敗")?;
 
         processed_bytes += bytes_read as u64;
+        chunk_counter += 1;
         progress.set_position(processed_bytes);
     }
 
@@ -658,6 +676,7 @@ fn encrypt_file_streaming(
 
     if verbose {
         println!("処理済みバイト数: {processed_bytes} バイト");
+        println!("処理済みチャンク数: {chunk_counter}");
         println!("=== ストリーミング暗号化完了 ===");
     }
 
@@ -732,18 +751,15 @@ fn decrypt_file(
 
 /// ストリーミング処理でファイルを復号化（大容量ファイル対応）
 fn decrypt_file_streaming(
-    input_path: &PathBuf,
-    output_path: &PathBuf,
+    input_path: &Path,
+    output_path: &Path,
     password: &str,
     verbose: bool,
 ) -> Result<()> {
-    const CHUNK_SIZE: usize = 64 * 1024; // 64KB のチャンク
-
     if verbose {
         println!("=== ストリーミング復号化開始 ===");
         println!("入力ファイル: {}", input_path.display());
         println!("出力ファイル: {}", output_path.display());
-        println!("チャンクサイズ: {} KB", CHUNK_SIZE / 1024);
     }
 
     // ファイルサイズを取得
@@ -751,7 +767,8 @@ fn decrypt_file_streaming(
         .with_context(|| format!("ファイル情報の取得に失敗: {}", input_path.display()))?;
     let file_size = metadata.len();
 
-    if file_size < 16 {
+    if file_size < 17 {
+        // ヘッダー(9) + チャンクサイズ(4) + 最小チャンク(4) = 17
         return Err(anyhow!("暗号化ファイルが不正です（サイズが小さすぎます）"));
     }
 
@@ -762,16 +779,6 @@ fn decrypt_file_streaming(
             file_size as f64 / 1_048_576.0
         );
     }
-
-    // 進捗バーを設定（IVの16バイトを除いた実際のデータサイズ）
-    let data_size = file_size - 16;
-    let progress = ProgressBar::new(data_size);
-    progress.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
-            .unwrap()
-            .progress_chars("#>-")
-    );
 
     // キーの生成
     let key = generate_key_from_password(password);
@@ -787,48 +794,84 @@ fn decrypt_file_streaming(
             .with_context(|| format!("出力ファイルの作成に失敗: {}", output_path.display()))?,
     );
 
-    // IVを読み込み
-    let mut iv = [0u8; 16];
+    // ヘッダーを読み込み
+    let mut header = [0u8; 9];
     input_file
-        .read_exact(&mut iv)
-        .context("IVの読み込みに失敗")?;
+        .read_exact(&mut header)
+        .context("ヘッダーの読み込みに失敗")?;
 
-    if verbose {
-        println!("IV: {}", base64_encode(&iv));
+    if &header != b"GCMSTREAM" {
+        return Err(anyhow!("無効なファイル形式です。"));
     }
 
-    // AES-CTR復号化エンジンを初期化
-    type Aes256Ctr = Ctr128BE<Aes256>;
-    let mut cipher = Aes256Ctr::new(&key.into(), &iv.into());
+    // チャンクサイズの読み込み
+    let mut chunk_size_bytes = [0u8; 4];
+    input_file
+        .read_exact(&mut chunk_size_bytes)
+        .context("チャンクサイズの読み込みに失敗")?;
+    let _chunk_size = u32::from_le_bytes(chunk_size_bytes) as usize;
 
     if verbose {
-        println!("AES-CTR復号エンジン初期化完了");
+        println!("ファイル形式確認完了");
+        println!("AES-GCM複合エンジン準備完了");
         println!("ストリーミング処理開始...");
     }
 
+    // 進捗バーを設定（IVの16バイトを除いた実際のデータサイズ）
+    let data_size = file_size - 13; // header(9) + chunk(4)
+    let progress = ProgressBar::new(data_size);
+    progress.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+            .unwrap()
+            .progress_chars("#>-")
+    );
+
     // チャンクごとに処理
-    let mut buffer = vec![0u8; CHUNK_SIZE];
     let mut processed_bytes = 0u64;
+    let mut chunk_counter = 0u64;
 
+    // チャンクごとに複合化
     loop {
-        let bytes_read = input_file
-            .read(&mut buffer)
-            .context("ファイル読み込み中にエラーが発生")?;
-
-        if bytes_read == 0 {
-            break; // EOF
+        // ナンスの読み込み
+        let mut nonce_bytes = [0u8; 12];
+        match input_file.read_exact(&mut nonce_bytes) {
+            Ok(_) => {}
+            Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                break; // EOF
+            }
+            Err(e) => return Err(anyhow!("ナンス読み込みエラー: {}", e)),
         }
+        let nonce = Nonce::from_slice(&nonce_bytes);
 
-        // データを復号化
-        let mut chunk = buffer[..bytes_read].to_vec();
-        cipher.apply_keystream(&mut chunk);
+        // 暗号化データ長を読み込み
+        let mut encrypted_len_bytes = [0u8; 4];
+        input_file
+            .read_exact(&mut encrypted_len_bytes)
+            .context("暗号化データ長の読み込みに失敗")?;
+        let encrypted_len = u32::from_le_bytes(encrypted_len_bytes) as usize;
 
-        // 復号化されたデータを書き込み
+        // 暗号化データを読み込み
+        let mut encrypted_chunk = vec![0u8; encrypted_len];
+        input_file
+            .read_exact(&mut encrypted_chunk)
+            .context("暗号化チャンクの読み込みに失敗")?;
+
+        //AES-GCM複合化エンジンを初期化(チャンクごとに新しいインスタンス)
+        let cipher = Aes256Gcm::new(&key.into());
+
+        // データを複合化
+        let decrypted_chunk = cipher
+            .decrypt(nonce, encrypted_chunk.as_slice())
+            .map_err(|e| anyhow!("チャンク複合化に失敗: {e}"))?;
+
+        // 複合化されたデータを書き込み
         output_file
-            .write_all(&chunk)
-            .context("復号化データの書き込み中にエラーが発生")?;
+            .write_all(&decrypted_chunk)
+            .context("複合化データの書き込み中にエラーが発生")?;
 
-        processed_bytes += bytes_read as u64;
+        processed_bytes += (12 + 4 + encrypted_len) as u64; // nonce + length + data
+        chunk_counter += 1;
         progress.set_position(processed_bytes);
     }
 
@@ -840,7 +883,7 @@ fn decrypt_file_streaming(
     progress.finish_with_message("復号化完了");
 
     if verbose {
-        println!("処理済みバイト数: {processed_bytes} バイト");
+        println!("処理済みチャンク数: {chunk_counter}");
         println!("=== ストリーミング復号化完了 ===");
     }
 
