@@ -1,15 +1,24 @@
 use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit},
+    aes::Aes256,
 };
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose};
 use clap::{Parser, Subcommand};
+use ctr::{
+    Ctr128BE,
+    cipher::{KeyIvInit, StreamCipher},
+};
+use indicatif::{ProgressBar, ProgressStyle};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, BufWriter, Read, Write};
 use std::path::PathBuf;
+use std::{
+    fs::{self, File},
+    io::BufReader,
+};
 
 /// 設定ファイルの構造
 #[derive(Debug, Serialize, Deserialize)]
@@ -124,6 +133,10 @@ enum Commands {
         /// 暗号化後に元ファイルを削除
         #[arg(long)]
         delete_original: bool,
+
+        /// ストリーミング処理を使用（大容量ファイル用）
+        #[arg(long)]
+        streaming: bool,
     },
     /// 暗号化されたファイルを複合化する
     DecryptFile {
@@ -149,6 +162,10 @@ enum Commands {
         /// 複合化後に暗号化ファイルを削除
         #[arg(long)]
         delete_encrypted: bool,
+
+        /// ストリーミング処理を使用（大容量ファイル用）
+        #[arg(long)]
+        streaming: bool,
     },
     /// 設定ファイルを管理する
     Config {
@@ -222,12 +239,18 @@ fn main() -> Result<()> {
             password_env,
             verbose,
             delete_original,
+            streaming,
         } => {
             let password = get_password_with_config(password, password_env, &config)?;
             let verbose = *verbose || config.default_verbose;
 
             let output_path = determine_output_path(input, output, true)?;
-            encrypt_file(input, &output_path, &password, verbose)?;
+
+            if *streaming {
+                encrypt_file_streaming(input, &output_path, &password, verbose)?;
+            } else {
+                encrypt_file(input, &output_path, &password, verbose)?;
+            }
 
             if *delete_original {
                 fs::remove_file(input)
@@ -247,12 +270,17 @@ fn main() -> Result<()> {
             password_env,
             verbose,
             delete_encrypted,
+            streaming,
         } => {
             let password = get_password_with_config(password, password_env, &config)?;
             let verbose = *verbose || config.default_verbose;
 
             let output_path = determine_output_path(input, output, false)?;
-            decrypt_file(input, &output_path, &password, verbose)?;
+            if *streaming {
+                decrypt_file_streaming(input, &output_path, &password, verbose)?;
+            } else {
+                decrypt_file(input, &output_path, &password, verbose)?;
+            }
 
             if *delete_encrypted {
                 fs::remove_file(input)
@@ -526,6 +554,117 @@ fn encrypt_file(
     Ok(())
 }
 
+/// ストリーミング処理でファイルを暗号化(大容量ファイル対応)
+fn encrypt_file_streaming(
+    input_path: &PathBuf,
+    output_path: &PathBuf,
+    password: &str,
+    verbose: bool,
+) -> Result<()> {
+    const CHUNK_SIZE: usize = 64 * 1024; // 64KB のチャンク
+
+    if verbose {
+        println!("=== ストリーミング暗号化開始 ===");
+        println!("入力ファイル: {}", input_path.display());
+        println!("出力ファイル: {}", output_path.display());
+        println!("チャンクサイズ: {} KB", CHUNK_SIZE / 1024);
+    }
+
+    // ファイルサイズの取得
+    let metadata = fs::metadata(input_path)
+        .with_context(|| format!("ファイル情報の取得に失敗: {}", input_path.display()))?;
+    let file_size = metadata.len();
+
+    if verbose {
+        println!(
+            "ファイルサイズ: {file_size} バイト ({:.2} MB)",
+            file_size as f64 / 1_048_576.0
+        );
+    }
+
+    // プログレスバーを設定
+    let progress = ProgressBar::new(file_size);
+    progress.set_style(
+        ProgressStyle::default_bar()
+            .template( "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+            .unwrap()
+            .progress_chars("#>-")
+        );
+
+    // キーとIVを生成
+    let key = generate_key_from_password(password);
+    let mut iv = [0u8; 16]; //AES-CTRではIVは16バイト
+    rand::rng().fill_bytes(&mut iv);
+
+    if verbose {
+        println!("キー生成完了");
+        println!("IV: {}", base64_encode(&iv));
+    }
+
+    // ファイルを開く
+    let mut input_file = BufReader::new(
+        File::open(input_path)
+            .with_context(|| format!("入力ファイルのオープンに失敗: {}", input_path.display()))?,
+    );
+
+    let mut output_file = BufWriter::new(
+        File::create(output_path)
+            .with_context(|| format!("出力ファイルの作成に失敗: {}", output_path.display()))?,
+    );
+
+    // IVをファイルの先頭に書き込み
+    output_file.write_all(&iv).context("IVの書き込みに失敗")?;
+
+    // AES-CTR暗号化エンジンを初期化
+    type Aes256Ctr = Ctr128BE<Aes256>;
+    let mut cipher = Aes256Ctr::new(&key.into(), &iv.into());
+
+    if verbose {
+        println!("AES-CTR暗号エンジンを初期化完了");
+        println!("ストリーミング処理開始...");
+    }
+
+    // チャンクごとに処理
+    let mut buffer = vec![0u8; CHUNK_SIZE];
+    let mut processed_bytes = 0u64;
+
+    loop {
+        let bytes_read = input_file
+            .read(&mut buffer)
+            .context("ファイル読み込み中にエラーが発生")?;
+
+        if bytes_read == 0 {
+            break; //EOF
+        }
+
+        // データを暗号化
+        let mut chunk = buffer[..bytes_read].to_vec();
+        cipher.apply_keystream(&mut chunk);
+
+        // 暗号化されたデータを書き込み
+        output_file
+            .write_all(&chunk)
+            .context("暗号化データの書き込み中にエラーが発生")?;
+
+        processed_bytes += bytes_read as u64;
+        progress.set_position(processed_bytes);
+    }
+
+    // バッファをフラッシュ
+    output_file
+        .flush()
+        .context("出力ファイルのフラッシュに失敗")?;
+
+    progress.finish_with_message("暗号化完了");
+
+    if verbose {
+        println!("処理済みバイト数: {} バイト", processed_bytes);
+        println!("=== ストリーミング暗号化完了 ===");
+    }
+
+    Ok(())
+}
+
 /// ファイルを復号化
 fn decrypt_file(
     input_path: &PathBuf,
@@ -587,6 +726,123 @@ fn decrypt_file(
     if verbose {
         println!("ファイル書き込み完了");
         println!("=== ファイル復号化完了 ===");
+    }
+
+    Ok(())
+}
+
+/// ストリーミング処理でファイルを復号化（大容量ファイル対応）
+fn decrypt_file_streaming(
+    input_path: &PathBuf,
+    output_path: &PathBuf,
+    password: &str,
+    verbose: bool,
+) -> Result<()> {
+    const CHUNK_SIZE: usize = 64 * 1024; // 64KB のチャンク
+
+    if verbose {
+        println!("=== ストリーミング復号化開始 ===");
+        println!("入力ファイル: {}", input_path.display());
+        println!("出力ファイル: {}", output_path.display());
+        println!("チャンクサイズ: {} KB", CHUNK_SIZE / 1024);
+    }
+
+    // ファイルサイズを取得
+    let metadata = fs::metadata(input_path)
+        .with_context(|| format!("ファイル情報の取得に失敗: {}", input_path.display()))?;
+    let file_size = metadata.len();
+
+    if file_size < 16 {
+        return Err(anyhow!("暗号化ファイルが不正です（サイズが小さすぎます）"));
+    }
+
+    if verbose {
+        println!(
+            "ファイルサイズ: {} バイト ({:.2} MB)",
+            file_size,
+            file_size as f64 / 1_048_576.0
+        );
+    }
+
+    // 進捗バーを設定（IVの16バイトを除いた実際のデータサイズ）
+    let data_size = file_size - 16;
+    let progress = ProgressBar::new(data_size);
+    progress.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+            .unwrap()
+            .progress_chars("#>-")
+    );
+
+    // キーの生成
+    let key = generate_key_from_password(password);
+
+    // ファイルを開く
+    let mut input_file = BufReader::new(
+        File::open(input_path)
+            .with_context(|| format!("入力ファイルのオープンに失敗: {}", input_path.display()))?,
+    );
+
+    let mut output_file = BufWriter::new(
+        File::create(output_path)
+            .with_context(|| format!("出力ファイルの作成に失敗: {}", output_path.display()))?,
+    );
+
+    // IVを読み込み
+    let mut iv = [0u8; 16];
+    input_file
+        .read_exact(&mut iv)
+        .context("IVの読み込みに失敗")?;
+
+    if verbose {
+        println!("IV: {}", base64_encode(&iv));
+    }
+
+    // AES-CTR復号化エンジンを初期化
+    type Aes256Ctr = Ctr128BE<Aes256>;
+    let mut cipher = Aes256Ctr::new(&key.into(), &iv.into());
+
+    if verbose {
+        println!("AES-CTR復号エンジン初期化完了");
+        println!("ストリーミング処理開始...");
+    }
+
+    // チャンクごとに処理
+    let mut buffer = vec![0u8; CHUNK_SIZE];
+    let mut processed_bytes = 0u64;
+
+    loop {
+        let bytes_read = input_file
+            .read(&mut buffer)
+            .context("ファイル読み込み中にエラーが発生")?;
+
+        if bytes_read == 0 {
+            break; // EOF
+        }
+
+        // データを復号化
+        let mut chunk = buffer[..bytes_read].to_vec();
+        cipher.apply_keystream(&mut chunk);
+
+        // 復号化されたデータを書き込み
+        output_file
+            .write_all(&chunk)
+            .context("復号化データの書き込み中にエラーが発生")?;
+
+        processed_bytes += bytes_read as u64;
+        progress.set_position(processed_bytes);
+    }
+
+    // バッファをフラッシュ
+    output_file
+        .flush()
+        .context("出力ファイルのフラッシュに失敗")?;
+
+    progress.finish_with_message("復号化完了");
+
+    if verbose {
+        println!("処理済みバイト数: {} バイト", processed_bytes);
+        println!("=== ストリーミング復号化完了 ===");
     }
 
     Ok(())
