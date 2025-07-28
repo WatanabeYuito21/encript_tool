@@ -3,6 +3,14 @@ name = "encript_tool"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "encript_tool"
+path = "src/lib.rs"
+
+[[bin]]
+name = "encript_tool"
+path = "src/main.rs"
+
 [dependencies]
 aes-gcm = "0.10.3"
 anyhow = "1.0.98"
