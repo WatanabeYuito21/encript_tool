@@ -12,8 +12,11 @@ pub use file_ops::{
 pub use key_derivation::{derive_key_with_argon2, generate_key_from_password};
 
 // 共通ユーティリティ
-use base64::{Engine as _, engine::general_purpose};
+use base64::{engine::general_purpose, Engine as _};
 
 pub fn base64_encode(data: &[u8]) -> String {
     general_purpose::STANDARD.encode(data)
 }
+
+#[cfg(feature = "gui")]
+pub mod gui;

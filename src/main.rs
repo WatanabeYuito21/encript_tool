@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use encript_tool::{
     config::{
-        Config, create_config_file, delete_config_file, get_default_config_path, load_config,
+        create_config_file, delete_config_file, get_default_config_path, load_config, Config,
     },
     crypto::{decrypt_string, encrypt_string},
     file_ops::{
@@ -15,6 +15,14 @@ use std::{
     io::{self, Read, Write},
     path::{Path, PathBuf},
 };
+// GUIモジュール用の再エクスポート
+#[cfg(feature = "gui")]
+use encript_tool::Config as LibConfig;
+#[cfg(feature = "gui")]
+use encript_tool::{decrypt_string as lib_decrypt, encrypt_string as lib_encrypt};
+
+#[cfg(feature = "gui")]
+mod gui;
 
 /// AES-GCM暗号化ツール
 #[derive(Parser)]
@@ -140,6 +148,9 @@ enum Commands {
         #[command(subcommand)]
         action: ConfigAction,
     },
+
+    #[cfg(feature = "gui")]
+    Gui,
 }
 
 #[derive(Subcommand)]
@@ -262,6 +273,26 @@ fn main() -> Result<()> {
 
         Commands::Config { action } => {
             handle_config_command(action, cli.config.as_deref())?;
+        }
+
+        #[cfg(feature = "gui")]
+        Commands::Gui => {
+            let native_options = eframe::NativeOptions {
+                viewport: egui::ViewportBuilder::default()
+                    .with_inner_size([800.0, 600.0])
+                    .with_min_inner_size([400.0, 300.0])
+                    .with_title("AES-GCM 暗号化ツール"),
+                ..Default::default()
+            };
+
+            if let Err(e) = eframe::run_native(
+                "AES-GCM Crypto Tool",
+                native_options,
+                Box::new(|cc| Ok(Box::new(gui::CryptApp::new(cc)))),
+            ) {
+                eprintln!("GUI起動エラー: {}", e);
+                std::process::exit(1);
+            }
         }
     }
 

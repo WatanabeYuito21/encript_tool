@@ -1,7 +1,7 @@
 [package]
 name = "encript_tool"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [lib]
 name = "encript_tool"
@@ -11,6 +11,10 @@ path = "src/lib.rs"
 name = "encript_tool"
 path = "src/main.rs"
 
+[features]
+default = []
+gui = ["eframe", "egui"]
+
 [dependencies]
 aes-gcm = "0.10.3"
 anyhow = "1.0.98"
@@ -19,9 +23,9 @@ base64 = "0.22.1"
 clap = {version = "4.5.41", features = ["derive"]}
 ctr = "0.9.2"
 dirs = "6.0.0"
-eframe = "0.32.0"
-egui = "0.32.0"
+eframe = { version = "0.32.0", optional = true }
+egui = { version = "0.32.0", optional = true }
 indicatif = "0.18.0"
 rand = "0.9.2"
-serde = {version = "1.0.219",features = ["derive"]}
+serde = {version = "1.0.219", features = ["derive"]}
 toml = "0.9.2"
