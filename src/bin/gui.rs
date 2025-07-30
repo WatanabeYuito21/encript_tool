@@ -609,24 +609,102 @@ impl CryptApp {
 
 impl eframe::App for CryptApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // 日本語フォント設定
+        // 日本語フォント設定（クロスプラットフォーム対応）
         if !self.fonts_loaded {
             let mut fonts = egui::FontDefinitions::default();
+            let mut font_loaded = false;
 
-            if let Ok(font_data) =
-                std::fs::read("/usr/share/fonts/vl-gothic-fonts/VL-Gothic-Regular.ttf")
+            // Windows用の日本語フォント設定
+            #[cfg(target_os = "windows")]
             {
-                fonts.font_data.insert(
-                    "vl_gothic".to_owned(),
-                    egui::FontData::from_owned(font_data).into(),
-                );
+                let font_paths = [
+                    "C:/Windows/Fonts/msgothic.ttc",            // MS Gothic
+                    "C:/Windows/Fonts/msjh.ttc",                // Microsoft JhengHei
+                    "C:/Windows/Fonts/yugoth.ttf",              // Yu Gothic
+                    "C:/Windows/Fonts/NotoSansCJK-Regular.ttc", // Noto Sans CJK (if installed)
+                ];
 
-                fonts
-                    .families
-                    .get_mut(&egui::FontFamily::Proportional)
-                    .unwrap()
-                    .insert(0, "vl_gothic".to_owned());
+                for font_path in &font_paths {
+                    if let Ok(font_data) = std::fs::read(font_path) {
+                        fonts.font_data.insert(
+                            "japanese_font".to_owned(),
+                            egui::FontData::from_owned(font_data).into(),
+                        );
 
+                        fonts
+                            .families
+                            .get_mut(&egui::FontFamily::Proportional)
+                            .unwrap()
+                            .insert(0, "japanese_font".to_owned());
+
+                        font_loaded = true;
+                        break;
+                    }
+                }
+            }
+
+            // Linux用の日本語フォント設定
+            #[cfg(target_os = "linux")]
+            {
+                let font_paths = [
+                    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+                    "/usr/share/fonts/truetype/takao-gothic/TakaoGothic.ttf",
+                    "/usr/share/fonts/vl-gothic-fonts/VL-Gothic-Regular.ttf",
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                    "/usr/share/fonts/TTF/NotoSansCJK-Regular.ttc",
+                    "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+                ];
+
+                for font_path in &font_paths {
+                    if let Ok(font_data) = std::fs::read(font_path) {
+                        fonts.font_data.insert(
+                            "japanese_font".to_owned(),
+                            egui::FontData::from_owned(font_data).into(),
+                        );
+
+                        fonts
+                            .families
+                            .get_mut(&egui::FontFamily::Proportional)
+                            .unwrap()
+                            .insert(0, "japanese_font".to_owned());
+
+                        font_loaded = true;
+                        break;
+                    }
+                }
+            }
+
+            // macOS用の日本語フォント設定
+            #[cfg(target_os = "macos")]
+            {
+                let font_paths = [
+                    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+                    "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
+                    "/Library/Fonts/Arial Unicode MS.ttf",
+                ];
+
+                for font_path in &font_paths {
+                    if let Ok(font_data) = std::fs::read(font_path) {
+                        fonts.font_data.insert(
+                            "japanese_font".to_owned(),
+                            egui::FontData::from_owned(font_data).into(),
+                        );
+
+                        fonts
+                            .families
+                            .get_mut(&egui::FontFamily::Proportional)
+                            .unwrap()
+                            .insert(0, "japanese_font".to_owned());
+
+                        font_loaded = true;
+                        break;
+                    }
+                }
+            }
+
+            // フォント設定を適用
+            if font_loaded {
                 ctx.set_fonts(fonts);
             }
 
