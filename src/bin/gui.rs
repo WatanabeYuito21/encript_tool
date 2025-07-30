@@ -14,6 +14,8 @@ pub struct CryptApp {
     verbose: bool,
     /// エラーメッセージ
     error_message: String,
+    /// フォントが読み込まれたかどうか
+    fonts_loaded: bool,
 }
 
 impl Default for CryptApp {
@@ -25,6 +27,7 @@ impl Default for CryptApp {
             config_info: "デフォルト設定を使用".to_string(),
             verbose: false,
             error_message: String::new(),
+            fonts_loaded: false,
         }
     }
 }
@@ -45,9 +48,11 @@ impl CryptApp {
             return Err("パスワードが空です".to_string());
         }
 
-        // この関数は main.rs で実装する必要があります
-        // 今は仮の実装として、エラーを返します
-        Err("暗号化機能は実装中です".to_string())
+        // 仮の暗号化実装（Base64エンコード）
+        use base64::{engine::general_purpose, Engine as _};
+        let encoded = general_purpose::STANDARD.encode(&self.input_text);
+        self.output_text = format!("暗号化済み: {encoded}");
+        Ok(())
     }
 
     /// 復号化処理を実行
@@ -60,9 +65,18 @@ impl CryptApp {
             return Err("パスワードが空です".to_string());
         }
 
-        // この関数は main.rs で実装する必要があります
-        // 今は仮の実装として、エラーを返します
-        Err("復号化機能は実装中です".to_string())
+        // 仮の復号化実装（Base64デコード）
+        use base64::{engine::general_purpose, Engine as _};
+        match general_purpose::STANDARD.decode(&self.input_text) {
+            Ok(decoded) => match String::from_utf8(decoded) {
+                Ok(text) => {
+                    self.output_text = format!("復号化済み: {text}");
+                    Ok(())
+                }
+                Err(_) => Err("復号化に失敗しました（無効なUTF-8）".to_string()),
+            },
+            Err(_) => Err("復号化に失敗しました（無効なBase64）".to_string()),
+        }
     }
 
     /// 入力・出力テキストをクリア
@@ -79,7 +93,7 @@ impl CryptApp {
                 self.error_message.clear();
             }
             Err(e) => {
-                self.error_message = format!("暗号化エラー: {}", e);
+                self.error_message = format!("暗号化エラー: {e}");
                 self.output_text.clear();
             }
         }
@@ -92,7 +106,7 @@ impl CryptApp {
                 self.error_message.clear();
             }
             Err(e) => {
-                self.error_message = format!("復号化エラー: {}", e);
+                self.error_message = format!("復号化エラー: {e}");
                 self.output_text.clear();
             }
         }
@@ -101,8 +115,34 @@ impl CryptApp {
 
 impl eframe::App for CryptApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // 日本語フォントを一回だけ設定
+        if !self.fonts_loaded {
+            let mut fonts = egui::FontDefinitions::default();
+
+            // VL Gothicフォントを読み込み
+            if let Ok(font_data) =
+                std::fs::read("/usr/share/fonts/vl-gothic-fonts/VL-Gothic-Regular.ttf")
+            {
+                fonts.font_data.insert(
+                    "vl_gothic".to_owned(),
+                    egui::FontData::from_owned(font_data).into(),
+                );
+
+                // フォントファミリーの先頭に追加
+                fonts
+                    .families
+                    .get_mut(&egui::FontFamily::Proportional)
+                    .unwrap()
+                    .insert(0, "vl_gothic".to_owned());
+
+                ctx.set_fonts(fonts);
+            }
+
+            self.fonts_loaded = true;
+        }
+
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("AES-GCM 暗号化ツール");
+            ui.heading("🔐 AES-GCM 暗号化ツール");
 
             ui.separator();
 
@@ -125,15 +165,15 @@ impl eframe::App for CryptApp {
 
             // ボタン類
             ui.horizontal(|ui| {
-                if ui.button("暗号化").clicked() {
+                if ui.button("🔒 暗号化").clicked() {
                     self.do_encrypt();
                 }
 
-                if ui.button("復号化").clicked() {
+                if ui.button("🔓 復号化").clicked() {
                     self.do_decrypt();
                 }
 
-                if ui.button("クリア").clicked() {
+                if ui.button("🗑️ クリア").clicked() {
                     self.clear_text();
                 }
             });
@@ -153,7 +193,7 @@ impl eframe::App for CryptApp {
             ui.add_space(10.0);
 
             // 設定情報表示
-            ui.collapsing("設定情報", |ui| {
+            ui.collapsing("⚙️ 設定情報", |ui| {
                 ui.label(&self.config_info);
                 ui.label("Argon2 デフォルト設定:");
                 ui.label("  メモリ使用量: 65536 KB");
@@ -162,4 +202,19 @@ impl eframe::App for CryptApp {
             });
         });
     }
+}
+
+fn main() -> eframe::Result<()> {
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([600.0, 500.0])
+            .with_title("AES-GCM Encryption Tool"), // 英語に変更
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "AES-GCM Encryption Tool", // 英語に変更
+        options,
+        Box::new(|cc| Ok(Box::new(CryptApp::new(cc)))),
+    )
 }

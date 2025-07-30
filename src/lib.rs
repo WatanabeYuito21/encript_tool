@@ -17,6 +17,3 @@ use base64::{engine::general_purpose, Engine as _};
 pub fn base64_encode(data: &[u8]) -> String {
     general_purpose::STANDARD.encode(data)
 }
-
-#[cfg(feature = "gui")]
-pub mod gui;

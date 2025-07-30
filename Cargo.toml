@@ -11,9 +11,14 @@ path = "src/lib.rs"
 name = "encript_tool"
 path = "src/main.rs"
 
+[[bin]]
+name = "encript_tool_gui"
+path = "src/bin/gui.rs"
+
 [features]
 default = []
 gui = ["eframe", "egui"]
+eframe = ["dep:eframe"]
 
 [dependencies]
 aes-gcm = "0.10.3"
