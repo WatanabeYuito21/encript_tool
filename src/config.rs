@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -30,7 +30,8 @@ pub struct Argon2Config {
     pub parallelism: u32,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+// PartialEq を追加
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum OutputFormat {
     Base64,
     Hex,
