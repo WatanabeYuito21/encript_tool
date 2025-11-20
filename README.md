@@ -1,139 +1,141 @@
 # encript_tool
 
-A secure encryption tool using AES-256-GCM with Argon2 key derivation, featuring both CLI and GUI interfaces.
+AES-256-GCM暗号化とArgon2鍵導出を使用したセキュアな暗号化ツール。CLIとGUIの両方のインターフェースを提供します。
 
-## Features
+## 特徴
 
-- **Strong Encryption**: AES-256-GCM authenticated encryption
-- **Secure Key Derivation**: Argon2 password hashing with configurable parameters
-- **Multiple Interfaces**: Command-line and graphical user interface
-- **Flexible Input**: Encrypt/decrypt strings or files
-- **Streaming Support**: Handle large files efficiently with streaming mode
-- **Configuration Management**: Customizable settings via TOML config file
-- **Password Options**: Direct input, environment variables, or interactive prompt
+- **強力な暗号化**: AES-256-GCM認証付き暗号化
+- **安全な鍵導出**: 設定可能なパラメータを持つArgon2パスワードハッシング
+- **複数のインターフェース**: コマンドライン（CLI）とグラフィカルユーザーインターフェース（GUI）
+- **柔軟な入力**: 文字列またはファイルの暗号化・復号化に対応
+- **ストリーミング対応**: 大容量ファイルを効率的に処理するストリーミングモード
+- **設定管理**: TOML設定ファイルによるカスタマイズ可能な設定
+- **パスワードオプション**: 直接入力、環境変数、対話型プロンプトに対応
 
-## Installation
+## インストール
 
-### From Source
+### ソースからビルド
 
 ```bash
-# Clone the repository
+# リポジトリをクローン
 git clone https://github.com/WatanabeYuito21/encript_tool.git
 cd encript_tool
 
-# Build CLI version
+# CLI版をビルド
 cargo build --release
 
-# Build with GUI support
+# GUI対応版をビルド
 cargo build --release --features gui
 ```
 
-The compiled binary will be available at `target/release/encript_tool`.
+コンパイルされたバイナリは `target/release/encript_tool` に生成されます。
 
-## Usage
+## 使い方
 
-### CLI Mode
+### CLIモード
 
-#### Encrypt a String
+#### 文字列の暗号化
 
 ```bash
-# From argument
+# 引数から暗号化
 encript_tool encrypt "Hello, World!" -p mypassword
 
-# From stdin
-echo "Secret message" | encript_tool encrypt -p mypassword
+# 標準入力から暗号化
+echo "秘密のメッセージ" | encript_tool encrypt -p mypassword
 
-# Using environment variable for password
+# 環境変数からパスワードを読み取る
 export CRYPT_PASSWORD="mypassword"
 encript_tool encrypt "Hello, World!" --password-env CRYPT_PASSWORD
 
-# Verbose output
+# 詳細な処理過程を表示
 encript_tool encrypt "Hello, World!" -p mypassword -v
 ```
 
-#### Decrypt a String
+#### 文字列の復号化
 
 ```bash
-# From argument
-encript_tool decrypt "encrypted_base64_string" -p mypassword
+# 引数から復号化
+encript_tool decrypt "暗号化されたbase64文字列" -p mypassword
 
-# From stdin
-echo "encrypted_base64_string" | encript_tool decrypt -p mypassword
+# 標準入力から復号化
+echo "暗号化されたbase64文字列" | encript_tool decrypt -p mypassword
 ```
 
-#### Encrypt a File
+#### ファイルの暗号化
 
 ```bash
-# Basic file encryption
+# 基本的なファイル暗号化
 encript_tool encrypt-file input.txt -p mypassword
 
-# Specify output file
+# 出力ファイルを指定
 encript_tool encrypt-file input.txt -o encrypted.enc -p mypassword
 
-# Delete original after encryption
+# 暗号化後に元ファイルを削除
 encript_tool encrypt-file input.txt -p mypassword --delete-original
 
-# Use streaming mode for large files
+# 大容量ファイル用のストリーミングモードを使用
 encript_tool encrypt-file largefile.zip -p mypassword --streaming
 ```
 
-#### Decrypt a File
+#### ファイルの復号化
 
 ```bash
-# Basic file decryption
+# 基本的なファイル復号化
 encript_tool decrypt-file encrypted.enc -p mypassword
 
-# Specify output file
+# 出力ファイルを指定
 encript_tool decrypt-file encrypted.enc -o output.txt -p mypassword
 
-# Delete encrypted file after decryption
+# 復号化後に暗号化ファイルを削除
 encript_tool decrypt-file encrypted.enc -p mypassword --delete-encrypted
 
-# Use streaming mode for large files
+# 大容量ファイル用のストリーミングモードを使用
 encript_tool decrypt-file largefile.enc -p mypassword --streaming
 ```
 
-### GUI Mode
+### GUIモード
 
-Launch the GUI application:
+GUIアプリケーションを起動：
 
 ```bash
-# If built with GUI feature
+# GUIフィーチャーでビルドした場合
 encript_tool gui
 
-# Or run the dedicated GUI binary
+# または専用のGUIバイナリを実行
 encript_tool_gui
 ```
 
-The GUI provides an intuitive interface for:
-- String encryption/decryption
-- File encryption/decryption
-- Real-time visualization of the encryption process
+GUIでは以下の機能を直感的に使用できます：
+- 文字列の暗号化・復号化
+- ファイルの暗号化・復号化
+- 暗号化プロセスのリアルタイム可視化
 
-### Configuration Management
+### 設定管理
 
 ```bash
-# Initialize default configuration file
+# デフォルト設定ファイルを作成
 encript_tool config init
 
-# Show current configuration
+# 現在の設定を表示
 encript_tool config show
 
-# Display config file path
+# 設定ファイルのパスを表示
 encript_tool config path
 
-# Reset configuration to defaults
+# 設定をデフォルトにリセット
 encript_tool config reset
 
-# Use custom config file
+# カスタム設定ファイルを使用
 encript_tool --config /path/to/config.toml encrypt "text" -p password
 ```
 
-## Configuration
+## 設定ファイル
 
-The configuration file is stored at `~/.config/encript_tool/config.toml` (Linux/macOS) or `%APPDATA%\encript_tool\config.toml` (Windows).
+設定ファイルは以下の場所に保存されます：
+- Linux/macOS: `~/.config/encript_tool/config.toml`
+- Windows: `%APPDATA%\encript_tool\config.toml`
 
-Example configuration:
+設定例：
 
 ```toml
 version = "1.0"
@@ -142,72 +144,72 @@ default_verbose = false
 default_password_env = "CRYPT_PASSWORD"
 
 [argon2]
-memory_cost = 65536      # Memory usage in KB (64 MB)
-time_cost = 3            # Number of iterations
-parallelism = 4          # Number of parallel threads
+memory_cost = 65536      # メモリ使用量（KB単位、64 MB）
+time_cost = 3            # イテレーション回数
+parallelism = 4          # 並列スレッド数
 ```
 
-### Argon2 Parameters
+### Argon2パラメータ
 
-- **memory_cost**: Amount of memory used (in KiB). Higher values increase security but require more RAM
-- **time_cost**: Number of iterations. Higher values increase security but take more time
-- **parallelism**: Number of parallel threads. Should match your CPU core count
+- **memory_cost**: 使用するメモリ量（KiB単位）。値を大きくするとセキュリティが向上しますが、より多くのRAMが必要です
+- **time_cost**: イテレーション回数。値を大きくするとセキュリティが向上しますが、処理時間が長くなります
+- **parallelism**: 並列スレッド数。CPUのコア数に合わせることを推奨します
 
-## Security Features
+## セキュリティ機能
 
-- **AES-256-GCM**: Industry-standard authenticated encryption providing both confidentiality and integrity
-- **Argon2**: Memory-hard key derivation function resistant to GPU/ASIC attacks
-- **Random Nonces**: Each encryption uses a unique 96-bit random nonce
-- **Authenticated Encryption**: Built-in integrity verification prevents tampering
-- **Secure Deletion**: Options to delete original files after encryption
+- **AES-256-GCM**: 機密性と完全性の両方を提供する業界標準の認証付き暗号化
+- **Argon2**: GPU/ASIC攻撃に耐性のあるメモリハード鍵導出関数
+- **ランダムナンス**: 各暗号化で一意の96ビットランダムナンスを使用
+- **認証付き暗号化**: 組み込みの完全性検証により改ざんを防止
+- **安全な削除**: 暗号化後に元ファイルを削除するオプション
 
-## Building
+## ビルド
 
 ```bash
-# Build CLI only
+# CLIのみをビルド
 cargo build --release
 
-# Build with GUI
+# GUIを含めてビルド
 cargo build --release --features gui
 
-# Run tests
+# テストを実行
 cargo test
 
-# Run with verbose logging
+# 詳細ログを有効にして実行
 RUST_LOG=debug cargo run -- encrypt "test" -p password -v
 ```
 
-## Dependencies
+## 依存関係
 
-Key dependencies:
-- `aes-gcm` - AES-GCM encryption
-- `argon2` - Argon2 key derivation
-- `clap` - Command-line argument parsing
-- `eframe` / `egui` - GUI framework (optional)
-- `base64` - Base64 encoding/decoding
+主な依存ライブラリ：
+- `aes-gcm` - AES-GCM暗号化
+- `argon2` - Argon2鍵導出
+- `clap` - コマンドライン引数解析
+- `eframe` / `egui` - GUIフレームワーク（オプション）
+- `base64` - Base64エンコード・デコード
 
-## License
+## ライセンス
 
-This project is open source. Please add an appropriate license file.
+このプロジェクトはオープンソースです。適切なライセンスファイルを追加してください。
 
-## Security Considerations
+## セキュリティに関する考慮事項
 
-- **Password Strength**: Use strong, unique passwords (minimum 12 characters recommended)
-- **Key Storage**: Never store passwords in plain text or version control
-- **Memory Security**: Sensitive data is not explicitly zeroed from memory
-- **Side Channels**: This implementation is not hardened against side-channel attacks
-- **Audit Status**: This tool has not undergone formal security audit
+- **パスワードの強度**: 強力で一意なパスワードを使用してください（最低12文字を推奨）
+- **鍵の保管**: パスワードを平文やバージョン管理システムに保存しないでください
+- **メモリセキュリティ**: 機密データは明示的にメモリから消去されません
+- **サイドチャネル**: この実装はサイドチャネル攻撃に対して強化されていません
+- **監査状況**: このツールは正式なセキュリティ監査を受けていません
 
-For production use cases requiring high security, consider:
-- Using hardware security modules (HSM)
-- Implementing additional key management practices
-- Conducting security audits
-- Following your organization's security policies
+高いセキュリティが求められる本番環境での使用には、以下を検討してください：
+- ハードウェアセキュリティモジュール（HSM）の使用
+- 追加の鍵管理手法の実装
+- セキュリティ監査の実施
+- 組織のセキュリティポリシーへの準拠
 
-## Contributing
+## コントリビューション
 
-Contributions are welcome! Please ensure code follows Rust best practices and includes appropriate tests.
+コントリビューションを歓迎します！コードはRustのベストプラクティスに従い、適切なテストを含めてください。
 
-## Acknowledgments
+## 謝辞
 
-Built with Rust and leveraging well-established cryptographic libraries from the RustCrypto project.
+このツールはRustで構築され、RustCryptoプロジェクトの確立された暗号化ライブラリを活用しています。
